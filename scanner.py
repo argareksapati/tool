@@ -1,5 +1,3 @@
-"""Simple TCP port scanner and lightweight service fingerprinting tool."""
-
 import argparse
 import concurrent.futures
 import json

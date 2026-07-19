@@ -3,6 +3,7 @@
 import argparse
 import concurrent.futures
 import json
+import re
 import socket
 import ssl
 import time
@@ -41,6 +42,7 @@ HTTP_PORTS = {
 
 MAX_RESPONSE_BYTES = 8192
 MAX_WORKERS = 50
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def build_parser():
@@ -91,34 +93,46 @@ def parse_ports(value):
         if not item:
             raise ValueError("Daftar port mengandung bagian kosong")
 
-        try:
-            if "-" in item:
+        if "-" in item:
+            try:
                 start_text, end_text = item.split("-", 1)
                 start = int(start_text)
                 end = int(end_text)
+            except ValueError as error:
+                raise ValueError(f"Format port tidak valid: {item}") from error
 
-                if start > end:
-                    raise ValueError(
-                        "Awal range tidak boleh lebih besar dari akhir"
-                    )
+            if not 1 <= start <= 65535:
+                raise ValueError(f"Port tidak valid: {start}")
+            if not 1 <= end <= 65535:
+                raise ValueError(f"Port tidak valid: {end}")
+            if start > end:
+                raise ValueError(
+                    "Awal range tidak boleh lebih besar dari akhir"
+                )
 
-                ports.update(range(start, end + 1))
-            else:
-                ports.add(int(item))
-        except ValueError as error:
-            if str(error) == "Awal range tidak boleh lebih besar dari akhir":
-                raise
-            raise ValueError(f"Format port tidak valid: {item}") from error
+            ports.update(range(start, end + 1))
+        else:
+            try:
+                port = int(item)
+            except ValueError as error:
+                raise ValueError(f"Format port tidak valid: {item}") from error
 
-    for port in ports:
-        if not 1 <= port <= 65535:
-            raise ValueError(f"Port tidak valid: {port}")
+            if not 1 <= port <= 65535:
+                raise ValueError(f"Port tidak valid: {port}")
+            ports.add(port)
 
     return sorted(ports)
 
 
 def resolve_target(target):
-    return socket.gethostbyname(target)
+    addresses = socket.getaddrinfo(
+        target,
+        None,
+        type=socket.SOCK_STREAM,
+    )
+    if not addresses:
+        raise socket.gaierror(f"Target tidak dapat di-resolve: {target}")
+    return addresses[0][4][0]
 
 
 def check_port(target, port, timeout):
@@ -133,16 +147,37 @@ def check_port(target, port, timeout):
         return "filtered"
 
 
-def build_http_request(target, method="HEAD"):
+def build_http_request(target, method="HEAD", port=None, tls=False):
+    default_port = 443 if tls else 80
+    host = target
+
+    if ":" in target and not target.startswith("["):
+        host = f"[{target}]"
+
+    host_header = host
+    if port is not None and port != default_port:
+        host_header = f"{host}:{port}"
+
     request = (
         f"{method} / HTTP/1.1\r\n"
-        f"Host: {target}\r\n"
+        f"Host: {host_header}\r\n"
         f"User-Agent: SimpleFingerprint/1.0\r\n"
         f"Accept: */*\r\n"
         f"Connection: close\r\n"
         f"\r\n"
     )
     return request.encode("ascii", errors="ignore")
+
+
+def sanitize_terminal(value, limit=200):
+    if value is None:
+        return None
+
+    sanitized = CONTROL_CHARS.sub(
+        lambda match: f"\\x{ord(match.group()):02x}",
+        str(value),
+    )
+    return sanitized[:limit]
 
 
 def receive_response(sock, max_bytes=MAX_RESPONSE_BYTES):
@@ -195,19 +230,45 @@ def parse_http_response(response):
     }
 
 
-def _request_http(target, port, timeout, method):
-    with socket.create_connection((target, port), timeout=timeout) as sock:
+def _request_http(
+    target,
+    port,
+    timeout,
+    method,
+    connect_address=None,
+):
+    address = connect_address or target
+    with socket.create_connection((address, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        sock.sendall(build_http_request(target, method=method))
+        sock.sendall(
+            build_http_request(
+                target,
+                method=method,
+                port=port,
+                tls=False,
+            )
+        )
         return receive_response(sock)
 
 
-def fingerprint_http(target, port, timeout):
-    response = _request_http(target, port, timeout, "HEAD")
+def fingerprint_http(target, port, timeout, connect_address=None):
+    response = _request_http(
+        target,
+        port,
+        timeout,
+        "HEAD",
+        connect_address,
+    )
     info = parse_http_response(response)
 
     if info["status_code"] in (405, 501) or not response:
-        response = _request_http(target, port, timeout, "GET")
+        response = _request_http(
+            target,
+            port,
+            timeout,
+            "GET",
+            connect_address,
+        )
 
     return response
 
@@ -243,8 +304,16 @@ def normalize_certificate_expiry(value):
     return parsed.date().isoformat()
 
 
-def _request_https_with_context(target, port, timeout, context, method):
-    with socket.create_connection((target, port), timeout=timeout) as raw_sock:
+def _request_https_with_context(
+    target,
+    port,
+    timeout,
+    context,
+    method,
+    connect_address=None,
+):
+    address = connect_address or target
+    with socket.create_connection((address, port), timeout=timeout) as raw_sock:
         raw_sock.settimeout(timeout)
 
         with context.wrap_socket(raw_sock, server_hostname=target) as tls_sock:
@@ -253,19 +322,34 @@ def _request_https_with_context(target, port, timeout, context, method):
             tls_version = tls_sock.version()
             cipher = tls_sock.cipher()
 
-            tls_sock.sendall(build_http_request(target, method=method))
+            tls_sock.sendall(
+                build_http_request(
+                    target,
+                    method=method,
+                    port=port,
+                    tls=True,
+                )
+            )
             response = receive_response(tls_sock)
 
     return response, certificate, tls_version, cipher
 
 
-def _fingerprint_https_with_context(target, port, timeout, context, verified):
+def _fingerprint_https_with_context(
+    target,
+    port,
+    timeout,
+    context,
+    verified,
+    connect_address=None,
+):
     response, certificate, tls_version, cipher = _request_https_with_context(
         target,
         port,
         timeout,
         context,
         "HEAD",
+        connect_address,
     )
     info = parse_http_response(response)
 
@@ -277,6 +361,7 @@ def _fingerprint_https_with_context(target, port, timeout, context, verified):
                 timeout,
                 context,
                 "GET",
+                connect_address,
             )
         )
         info = parse_http_response(response)
@@ -295,7 +380,7 @@ def _fingerprint_https_with_context(target, port, timeout, context, verified):
     return info
 
 
-def fingerprint_https(target, port, timeout):
+def fingerprint_https(target, port, timeout, connect_address=None):
     try:
         return _fingerprint_https_with_context(
             target,
@@ -303,6 +388,7 @@ def fingerprint_https(target, port, timeout):
             timeout,
             ssl.create_default_context(),
             verified=True,
+            connect_address=connect_address,
         )
     except ssl.SSLCertVerificationError:
         return _fingerprint_https_with_context(
@@ -311,11 +397,13 @@ def fingerprint_https(target, port, timeout):
             timeout,
             create_unverified_context(),
             verified=False,
+            connect_address=connect_address,
         )
 
 
-def grab_generic_banner(target, port, timeout):
-    with socket.create_connection((target, port), timeout=timeout) as sock:
+def grab_generic_banner(target, port, timeout, connect_address=None):
+    address = connect_address or target
+    with socket.create_connection((address, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         try:
             data = sock.recv(1024)
@@ -346,9 +434,14 @@ def guess_service_from_banner(banner):
     return "TCP"
 
 
-def _try_https(target, port, timeout, result):
+def _try_https(target, port, timeout, result, connect_address=None):
     try:
-        info = fingerprint_https(target, port, timeout)
+        info = fingerprint_https(
+            target,
+            port,
+            timeout,
+            connect_address,
+        )
     except (ssl.SSLError, socket.timeout, OSError):
         return False
 
@@ -359,9 +452,14 @@ def _try_https(target, port, timeout, result):
     return True
 
 
-def _try_http(target, port, timeout, result):
+def _try_http(target, port, timeout, result, connect_address=None):
     try:
-        response = fingerprint_http(target, port, timeout)
+        response = fingerprint_http(
+            target,
+            port,
+            timeout,
+            connect_address,
+        )
         info = parse_http_response(response)
     except (socket.timeout, OSError):
         return False
@@ -374,9 +472,14 @@ def _try_http(target, port, timeout, result):
     return True
 
 
-def _try_generic_banner(target, port, timeout, result):
+def _try_generic_banner(target, port, timeout, result, connect_address=None):
     try:
-        banner = grab_generic_banner(target, port, timeout)
+        banner = grab_generic_banner(
+            target,
+            port,
+            timeout,
+            connect_address,
+        )
     except (socket.timeout, OSError):
         banner = None
 
@@ -388,8 +491,9 @@ def _try_generic_banner(target, port, timeout, result):
     return False
 
 
-def scan_port(target, port, timeout):
-    status = check_port(target, port, timeout)
+def scan_port(target, port, timeout, connect_address=None):
+    address = connect_address or target
+    status = check_port(address, port, timeout)
     result = {
         "port": port,
         "status": status,
@@ -408,14 +512,14 @@ def scan_port(target, port, timeout):
         probes = (_try_generic_banner, _try_https, _try_http)
 
     for probe in probes:
-        if probe(target, port, timeout, result):
+        if probe(target, port, timeout, result, address):
             return result
 
     result["service_guess"] = "TCP"
     return result
 
 
-def scan_ports(target, ports, timeout, workers):
+def scan_ports(target, ports, timeout, workers, connect_address=None):
     results = []
     worker_count = min(workers, len(ports), MAX_WORKERS)
 
@@ -423,7 +527,13 @@ def scan_ports(target, ports, timeout, workers):
         max_workers=worker_count
     ) as executor:
         future_map = {
-            executor.submit(scan_port, target, port, timeout): port
+            executor.submit(
+                scan_port,
+                target,
+                port,
+                timeout,
+                connect_address,
+            ): port
             for port in ports
         }
 
@@ -447,7 +557,7 @@ def scan_ports(target, ports, timeout, workers):
 
 def print_results(target, scan_start, duration, results):
     print()
-    print(f"Target       : {target}")
+    print(f"Target       : {sanitize_terminal(target, limit=255)}")
     print(f"Scan started : {scan_start}")
     print()
     print(f"{'PORT':<8}{'STATUS':<12}{'SERVICE':<14}INFO")
@@ -462,22 +572,27 @@ def print_results(target, scan_start, duration, results):
 
         if banner:
             if banner.get("server_header"):
-                info_parts.append(f"Server: {banner['server_header']}")
+                info_parts.append(
+                    "Server: "
+                    f"{sanitize_terminal(banner['server_header'])}"
+                )
             if banner.get("status_code") is not None:
                 info_parts.append(f"Status: {banner['status_code']}")
             if banner.get("tls_cert_cn"):
-                info_parts.append(f"Cert CN: {banner['tls_cert_cn']}")
+                info_parts.append(
+                    "Cert CN: "
+                    f"{sanitize_terminal(banner['tls_cert_cn'])}"
+                )
             if banner.get("tls_cert_expiry"):
                 info_parts.append(
-                    f"Cert expiry: {banner['tls_cert_expiry']}"
+                    "Cert expiry: "
+                    f"{sanitize_terminal(banner['tls_cert_expiry'])}"
                 )
             if banner.get("certificate_verified") is False:
                 info_parts.append("Cert: unverified")
             if not info_parts and banner.get("raw_banner"):
                 info_parts.append(
-                    banner["raw_banner"]
-                    .replace("\r", " ")
-                    .replace("\n", " ")[:70]
+                    sanitize_terminal(banner["raw_banner"], limit=70)
                 )
 
         info = " | ".join(info_parts) if info_parts else "-"
@@ -519,6 +634,7 @@ def main():
         ports=ports,
         timeout=args.timeout,
         workers=args.workers,
+        connect_address=resolved_ip,
     )
     duration = time.perf_counter() - timer_start
     scan_start_text = scan_started_at.isoformat()

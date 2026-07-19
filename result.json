@@ -1,8 +1,8 @@
 {
   "target": "scanme.nmap.org",
   "resolved_ip": "45.33.32.156",
-  "scan_start": "2026-07-19T08:39:17.040108+00:00",
-  "scan_duration_seconds": 2.198,
+  "scan_start": "2026-07-19T11:09:05.882065+00:00",
+  "scan_duration_seconds": 2.008,
   "ports": [
     {
       "port": 22,
@@ -19,24 +19,24 @@
       "banner": {
         "status_code": 200,
         "server_header": "Apache/2.4.7 (Ubuntu)",
-        "raw_banner": "HTTP/1.1 200 OK\r\nDate: Sun, 19 Jul 2026 08:39:17 GMT\r\nServer: Apache/2.4.7 (Ubuntu)\r\nAccept-Ranges: bytes\r\nVary: Accept-Encoding\r\nConnection: close\r\nContent-Type: text/html"
+        "raw_banner": "HTTP/1.1 200 OK\r\nDate: Sun, 19 Jul 2026 11:09:06 GMT\r\nServer: Apache/2.4.7 (Ubuntu)\r\nAccept-Ranges: bytes\r\nVary: Accept-Encoding\r\nConnection: close\r\nContent-Type: text/html"
       }
     },
     {
       "port": 443,
-      "status": "closed",
+      "status": "filtered",
       "service_guess": null,
       "banner": null
     },
     {
       "port": 8080,
-      "status": "closed",
+      "status": "filtered",
       "service_guess": null,
       "banner": null
     },
     {
       "port": 8443,
-      "status": "closed",
+      "status": "filtered",
       "service_guess": null,
       "banner": null
     }

@@ -8,12 +8,11 @@ asli tetap digunakan untuk HTTP `Host` dan TLS SNI.
 
 ## Requirements
 
-- Python 3.10 atau lebih baru (telah diuji dengan Python 3.13)
-- Tidak membutuhkan dependency eksternal
+- Python 3.10
 
 ## Instalasi
 
-Clone repository, lalu masuk ke direktorinya:
+Clone repository
 
 ```bash
 git clone https://github.com/argareksapati/tool.git
@@ -117,10 +116,7 @@ Dari folder project:
 python -m unittest discover -s tests -v
 ```
 
-## Pengujian legal
-
-Gunakan hanya target yang memang memberikan izin scanning. Contoh target resmi
-untuk latihan ini:
+## Pengujian
 
 ```bash
 python scanner.py scanme.nmap.org \
@@ -134,9 +130,3 @@ python scanner.py scanme.nmap.org \
 ## Screenshot hasil pengujian
 
 ![Unit test dan legal scan](screenshot.png)
-
-## Legal notice / Peringatan penggunaan legal
-
-Gunakan hanya terhadap sistem yang dimiliki sendiri atau sistem yang secara
-jelas memberikan izin tertulis untuk diuji. Jangan memindai target publik lain
-tanpa izin.

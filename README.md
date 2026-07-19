@@ -6,9 +6,8 @@ HTTP/HTTPS, metadata TLS, atau banner awal service.
 
 ## Requirements
 
-- Python 3.10 atau lebih baru
-- Tidak membutuhkan dependency eksternal
-
+- Python 3.10
+  
 ## Instalasi
 
 Download atau salin folder project, lalu masuk ke direktorinya:
@@ -16,8 +15,7 @@ Download atau salin folder project, lalu masuk ke direktorinya:
 ```bash
 cd simple-port-fingerprint
 ```
-
-Tidak ada package tambahan yang perlu dipasang. Pastikan Python tersedia:
+Pastikan Python tersedia:
 
 ```bash
 python --version
@@ -107,9 +105,9 @@ Dari folder project:
 python -m unittest discover -s tests -v
 ```
 
-## Pengujian legal
+## Pengujian
 
-Contoh target resmi yang disebutkan untuk latihan ini:
+Contoh
 
 ```bash
 python scanner.py scanme.nmap.org \
@@ -119,15 +117,7 @@ python scanner.py scanme.nmap.org \
   -o result.json
 ```
 
-Untuk bukti pengumpulan tugas, jalankan perintah tersebut lalu ambil screenshot
-terminal yang memperlihatkan tabel hasil dan pesan penyimpanan JSON.
 
 ## Screenshot hasil pengujian
 
 ![Unit test dan legal scan](screenshot.png)
-
-## Legal notice
-
-Gunakan hanya terhadap sistem yang dimiliki sendiri atau sistem yang secara
-jelas memberikan izin tertulis untuk diuji. Jangan memindai target publik lain
-tanpa izin.

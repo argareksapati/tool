@@ -1,12 +1,22 @@
+import io
+import ssl
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 from scanner import (
     DEFAULT_PORTS,
+    build_http_request,
     fingerprint_http,
+    fingerprint_https,
+    guess_service_from_banner,
     parse_http_response,
     parse_ports,
+    print_results,
+    resolve_target,
+    sanitize_terminal,
     scan_port,
+    scan_ports,
 )
 
 
@@ -33,6 +43,14 @@ class TestPortParser(unittest.TestCase):
     def test_invalid_port(self):
         with self.assertRaises(ValueError):
             parse_ports("70000")
+
+    def test_large_range_is_rejected_before_expansion(self):
+        range_mock = mock.Mock()
+        with mock.patch("scanner.range", range_mock, create=True):
+            with self.assertRaisesRegex(ValueError, "100000000"):
+                parse_ports("1-100000000")
+
+        range_mock.assert_not_called()
 
     def test_reversed_range(self):
         with self.assertRaises(ValueError):
@@ -87,6 +105,117 @@ class TestHTTPParser(unittest.TestCase):
         )
 
 
+class TestHTTPRequest(unittest.TestCase):
+    def test_default_http_port_is_not_added_to_host(self):
+        request = build_http_request("example.test", port=80)
+
+        self.assertIn(b"\r\nHost: example.test\r\n", request)
+
+    def test_non_default_http_port_is_added_to_host(self):
+        request = build_http_request("example.test", port=8080)
+
+        self.assertIn(b"\r\nHost: example.test:8080\r\n", request)
+
+    def test_non_default_https_port_is_added_to_host(self):
+        request = build_http_request(
+            "example.test",
+            port=8443,
+            tls=True,
+        )
+
+        self.assertIn(b"\r\nHost: example.test:8443\r\n", request)
+
+    def test_ipv6_host_is_bracketed(self):
+        request = build_http_request("2001:db8::1", port=8080)
+
+        self.assertIn(b"\r\nHost: [2001:db8::1]:8080\r\n", request)
+
+
+class TestTLSFingerprint(unittest.TestCase):
+    @mock.patch("scanner._fingerprint_https_with_context")
+    def test_certificate_failure_uses_unverified_fallback(self, fingerprint):
+        fingerprint.side_effect = [
+            ssl.SSLCertVerificationError(
+                1,
+                "certificate verify failed",
+            ),
+            {"certificate_verified": False},
+        ]
+
+        result = fingerprint_https("example.test", 443, 1.0)
+
+        self.assertFalse(result["certificate_verified"])
+        self.assertEqual(fingerprint.call_count, 2)
+        self.assertTrue(fingerprint.call_args_list[0].kwargs["verified"])
+        self.assertFalse(fingerprint.call_args_list[1].kwargs["verified"])
+
+
+class TestTerminalOutput(unittest.TestCase):
+    def test_control_characters_are_escaped(self):
+        value = "nginx\x1b[2J\x07\x85banner"
+
+        self.assertEqual(
+            sanitize_terminal(value),
+            r"nginx\x1b[2J\x07\x85banner",
+        )
+
+    def test_sanitized_output_is_limited(self):
+        self.assertEqual(sanitize_terminal("abcdef", limit=4), "abcd")
+
+    def test_remote_fields_are_sanitized_before_printing(self):
+        results = [
+            {
+                "port": 80,
+                "status": "open",
+                "service_guess": "HTTP",
+                "banner": {
+                    "server_header": "nginx\x1b[2J",
+                    "status_code": 200,
+                },
+            },
+            {
+                "port": 22,
+                "status": "open",
+                "service_guess": "SSH",
+                "banner": {"raw_banner": "SSH-2.0-test\x07"},
+            },
+        ]
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            print_results("example.test", "now", 0.1, results)
+
+        terminal_text = output.getvalue()
+        self.assertNotIn("\x1b", terminal_text)
+        self.assertNotIn("\x07", terminal_text)
+        self.assertIn(r"nginx\x1b[2J", terminal_text)
+        self.assertIn(r"SSH-2.0-test\x07", terminal_text)
+
+
+class TestTargetResolution(unittest.TestCase):
+    @mock.patch("scanner.socket.getaddrinfo")
+    def test_ipv6_address_can_be_resolved(self, getaddrinfo):
+        getaddrinfo.return_value = [
+            (
+                10,
+                1,
+                6,
+                "",
+                ("2001:db8::10", 0, 0, 0),
+            )
+        ]
+
+        self.assertEqual(resolve_target("example.test"), "2001:db8::10")
+
+
+class TestServiceGuess(unittest.TestCase):
+    def test_ssh_banner_is_detected(self):
+        self.assertEqual(
+            guess_service_from_banner("SSH-2.0-OpenSSH_9.6"),
+            "SSH",
+        )
+
+
 class TestScanResult(unittest.TestCase):
     @mock.patch("scanner.check_port", return_value="closed")
     def test_closed_port_has_null_banner(self, _check_port):
@@ -95,6 +224,31 @@ class TestScanResult(unittest.TestCase):
         self.assertEqual(result["status"], "closed")
         self.assertIsNone(result["service_guess"])
         self.assertIsNone(result["banner"])
+
+    @mock.patch("scanner.check_port", return_value="closed")
+    def test_resolved_address_is_used_for_connection(self, check_port):
+        scan_port(
+            "example.test",
+            443,
+            0.1,
+            connect_address="192.0.2.10",
+        )
+
+        check_port.assert_called_once_with("192.0.2.10", 443, 0.1)
+
+
+class TestConcurrency(unittest.TestCase):
+    @mock.patch("scanner.concurrent.futures.as_completed", return_value=[])
+    @mock.patch("scanner.concurrent.futures.ThreadPoolExecutor")
+    def test_worker_count_is_limited_to_50(self, executor, _as_completed):
+        scan_ports(
+            "localhost",
+            list(range(1, 101)),
+            timeout=0.1,
+            workers=100,
+        )
+
+        executor.assert_called_once_with(max_workers=50)
 
 
 if __name__ == "__main__":

@@ -2,19 +2,24 @@
 
 Tool CLI sederhana berbasis Python untuk melakukan TCP connect scan secara
 concurrent dan mengidentifikasi service pada port terbuka melalui respons
-HTTP/HTTPS, metadata TLS, atau banner awal service.
+HTTP/HTTPS, metadata TLS, atau banner awal service. Hostname di-resolve satu
+kali agar seluruh port dipindai pada alamat yang konsisten, sementara hostname
+asli tetap digunakan untuk HTTP `Host` dan TLS SNI.
 
 ## Requirements
 
-- Python 3.10
-  
+- Python 3.10 atau lebih baru (telah diuji dengan Python 3.13)
+- Tidak membutuhkan dependency eksternal
+
 ## Instalasi
 
-Download atau salin folder project, lalu masuk ke direktorinya:
+Clone repository, lalu masuk ke direktorinya:
 
 ```bash
-cd simple-port-fingerprint
+git clone https://github.com/argareksapati/tool.git
+cd tool
 ```
+
 Pastikan Python tersedia:
 
 ```bash
@@ -24,10 +29,12 @@ python --version
 ## Struktur project
 
 ```text
-simple-port-fingerprint/
-├── scanner.py
+tool/
+├── .gitignore
 ├── README.md
 ├── result.json
+├── scanner.py
+├── screenshot.png
 └── tests/
     └── test_scanner.py
 ```
@@ -97,6 +104,11 @@ Tool membatasi respons HTTP/HTTPS hingga 8192 byte dan generic banner hingga
 mismatch, tool mencoba kembali tanpa verifikasi dan menandainya sebagai
 `certificate_verified: false` pada JSON.
 
+Untuk port HTTP/HTTPS non-default, header `Host` menyertakan nomor port. Data
+dari service remote tetap disimpan pada JSON, tetapi karakter kontrol C0/C1
+diubah menjadi bentuk aman seperti `\x1b` sebelum ditampilkan ke terminal.
+Hostname maupun alamat IPv4/IPv6 didukung melalui `socket.getaddrinfo()`.
+
 ## Menjalankan test
 
 Dari folder project:
@@ -105,9 +117,10 @@ Dari folder project:
 python -m unittest discover -s tests -v
 ```
 
-## Pengujian
+## Pengujian legal
 
-Contoh
+Gunakan hanya target yang memang memberikan izin scanning. Contoh target resmi
+untuk latihan ini:
 
 ```bash
 python scanner.py scanme.nmap.org \
@@ -121,3 +134,9 @@ python scanner.py scanme.nmap.org \
 ## Screenshot hasil pengujian
 
 ![Unit test dan legal scan](screenshot.png)
+
+## Legal notice / Peringatan penggunaan legal
+
+Gunakan hanya terhadap sistem yang dimiliki sendiri atau sistem yang secara
+jelas memberikan izin tertulis untuk diuji. Jangan memindai target publik lain
+tanpa izin.
